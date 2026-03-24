@@ -1,0 +1,665 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>VDOT Level Up</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+html, body {
+  background: #050518;
+  height: 100%;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  touch-action: none;
+  user-select: none;
+}
+canvas {
+  display: block;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+'use strict';
+
+// ── URL params ───────────────────────────────────────────────────────────────
+const UP       = new URLSearchParams(location.search);
+const VDOT_OLD = Math.max(25, Math.min(84, +(UP.get('from') || 39)));
+const VDOT_NEW = Math.max(26, Math.min(85, +(UP.get('to')   || 40)));
+const ATH_NAME = decodeURIComponent(UP.get('name') || 'Runner');
+const SOURCE   = decodeURIComponent(UP.get('source') || 'race');   // 'race' | 'adjusted'
+
+// ── Canvas ───────────────────────────────────────────────────────────────────
+const canvas = document.getElementById('c');
+const ctx    = canvas.getContext('2d');
+const CW = 360, CH = 640;
+
+function resize() {
+  const scale = Math.min(window.innerWidth/CW, window.innerHeight/CH);
+  canvas.width  = CW; canvas.height = CH;
+  canvas.style.width  = Math.floor(CW*scale)+'px';
+  canvas.style.height = Math.floor(CH*scale)+'px';
+}
+resize();
+window.addEventListener('resize', resize);
+
+// ── Drawing helpers ──────────────────────────────────────────────────────────
+function r(x,y,w,h,col) { ctx.fillStyle=col; ctx.fillRect(x,y,w,h); }
+function centeredText(txt,y,size,col,shadow) {
+  ctx.font=`bold ${size}px monospace`;
+  const x = CW/2 - ctx.measureText(txt).width/2;
+  if(shadow){ ctx.fillStyle='rgba(0,0,0,0.8)'; ctx.fillText(txt,x+2,y+2); }
+  ctx.fillStyle=col||'#fff'; ctx.fillText(txt,x,y);
+}
+function pixelBorder(x,y,w,h,col) {
+  ctx.strokeStyle=col; ctx.lineWidth=3; ctx.strokeRect(x,y,w,h);
+  ctx.strokeStyle='rgba(255,255,255,0.15)'; ctx.lineWidth=1; ctx.strokeRect(x+3,y+3,w-6,h-6);
+}
+function shadeCol(hex,amt) {
+  const n=parseInt(hex.replace('#',''),16);
+  const c=v=>Math.max(0,Math.min(255,v));
+  return `rgb(${c((n>>16&255)+amt)},${c((n>>8&255)+amt)},${c((n&255)+amt)})`;
+}
+
+// ── Audio ────────────────────────────────────────────────────────────────────
+let ac=null;
+function initAC(){ if(!ac) ac=new(window.AudioContext||window.webkitAudioContext)(); }
+function tone(freq,dur,type='square',vol=0.18,delay=0){
+  if(!ac) return;
+  const t=ac.currentTime+delay;
+  const o=ac.createOscillator(), g=ac.createGain();
+  o.connect(g); g.connect(ac.destination);
+  o.type=type; o.frequency.value=freq;
+  g.gain.setValueAtTime(vol,t);
+  g.gain.exponentialRampToValueAtTime(0.001,t+dur);
+  o.start(t); o.stop(t+dur+0.05);
+}
+
+// Triumphant level-up fanfare — 8-bit RPG style
+function playFanfare() {
+  if(!ac) return;
+  // Arpeggiated chord ascent then flourish
+  const seq = [
+    [262,0.08,0],[330,0.08,0.09],[392,0.08,0.18],[523,0.12,0.27],
+    [392,0.06,0.42],[523,0.06,0.50],[659,0.06,0.58],[784,0.06,0.66],
+    [1047,0.28,0.74],
+    // Second phrase
+    [523,0.08,1.1],[659,0.08,1.2],[784,0.08,1.3],[1047,0.22,1.4],
+    [784,0.06,1.66],[880,0.06,1.74],[988,0.06,1.82],[1047,0.06,1.90],[1175,0.4,1.98],
+  ];
+  seq.forEach(([f,d,dl]) => tone(f,d,'square',0.2,dl));
+  // Bass line
+  [131,165,196,262,196,262,330,262].forEach((f,i) => tone(f,0.2,'square',0.08,i*0.25));
+  // High sparkle
+  [2093,2637,3136].forEach((f,i) => tone(f,0.08,'sine',0.06,1.1+i*0.06));
+}
+
+// ── Particles ────────────────────────────────────────────────────────────────
+let particles = [];
+let fireworks = [];
+
+function spawnConfetti(n) {
+  const cols=['#ffd700','#e63946','#1d6fa4','#2a9d3e','#f4a261','#a8dadc','#ffffff','#ff9ff3'];
+  for(let i=0;i<n;i++) {
+    particles.push({
+      x: CW/2 + (Math.random()-0.5)*80,
+      y: CH*0.35,
+      vx: (Math.random()-0.5)*6,
+      vy: -(2+Math.random()*5),
+      rot: Math.random()*Math.PI*2,
+      rotV: (Math.random()-0.5)*0.3,
+      w: 6+Math.random()*6,
+      h: 4+Math.random()*4,
+      col: cols[Math.floor(Math.random()*cols.length)],
+      life: 1,
+      decay: 0.006+Math.random()*0.006,
+      gravity: 0.12+Math.random()*0.08,
+    });
+  }
+}
+
+function spawnFirework(cx,cy) {
+  const hue=Math.floor(Math.random()*360);
+  const col=`hsl(${hue},100%,65%)`;
+  const col2=`hsl(${(hue+40)%360},100%,75%)`;
+  const n=18+Math.floor(Math.random()*12);
+  for(let i=0;i<n;i++) {
+    const ang=Math.PI*2*i/n+(Math.random()-0.5)*0.2;
+    const spd=2+Math.random()*3;
+    fireworks.push({
+      x:cx, y:cy,
+      vx:Math.cos(ang)*spd, vy:Math.sin(ang)*spd,
+      col: Math.random()<0.5?col:col2,
+      life:1, decay:0.018+Math.random()*0.01,
+      size:2+Math.random()*2,
+    });
+  }
+}
+
+function updateParticles(dt) {
+  particles = particles.filter(p=>{
+    p.x  += p.vx*dt*60;
+    p.y  += p.vy*dt*60;
+    p.vy += p.gravity*dt*60;
+    p.rot+= p.rotV*dt*60;
+    p.life-= p.decay*dt*60;
+    return p.life>0;
+  });
+  fireworks = fireworks.filter(p=>{
+    p.x  += p.vx*dt*60;
+    p.y  += p.vy*dt*60;
+    p.vy += 0.04*dt*60;
+    p.life -= p.decay*dt*60;
+    return p.life>0;
+  });
+}
+
+function drawParticles() {
+  particles.forEach(p => {
+    ctx.save();
+    ctx.translate(p.x,p.y); ctx.rotate(p.rot);
+    ctx.globalAlpha=Math.min(1,p.life*2);
+    ctx.fillStyle=p.col;
+    ctx.fillRect(-p.w/2,-p.h/2,p.w,p.h);
+    ctx.restore();
+  });
+  ctx.globalAlpha=1;
+  fireworks.forEach(p => {
+    ctx.globalAlpha=p.life;
+    r(p.x,p.y,p.size,p.size,p.col);
+    r(p.x-1,p.y-1,p.size+1,p.size+1,'rgba(255,255,255,0.3)');
+  });
+  ctx.globalAlpha=1;
+}
+
+// ── Stars background ─────────────────────────────────────────────────────────
+const stars = Array.from({length:60}, ()=>({
+  x:Math.random()*CW, y:Math.random()*(CH*0.55),
+  s:Math.random()*1.8+0.4, t:Math.random()*Math.PI*2,
+  speed:0.02+Math.random()*0.04,
+}));
+
+function drawNightSky() {
+  // Deep space gradient
+  const sg=ctx.createLinearGradient(0,0,0,CH*0.6);
+  sg.addColorStop(0,'#020210');
+  sg.addColorStop(0.6,'#0a0a28');
+  sg.addColorStop(1,'#101030');
+  ctx.fillStyle=sg; ctx.fillRect(0,0,CW,CH*0.6);
+
+  // Stars
+  stars.forEach(st=>{
+    st.t+=st.speed;
+    const bright=0.3+0.65*Math.abs(Math.sin(st.t));
+    ctx.fillStyle=`rgba(255,255,220,${bright})`;
+    ctx.fillRect(Math.floor(st.x),Math.floor(st.y),Math.ceil(st.s),Math.ceil(st.s));
+  });
+
+  // Moon
+  r(CW-70,18,22,22,'#fffacc');
+  r(CW-68,20,18,18,'#fff7aa');
+  r(CW-62,18,16,22,'#070722'); // crescent
+  r(CW-66,28, 7, 7,'#fffacc'); // crater
+  r(CW-71,22, 5, 5,'#f0e899');
+}
+
+function drawSkyline() {
+  const baseY = CH*0.52;
+  // Buildings
+  const bldgs=[
+    [0,55,20],[18,78,16],[32,62,22],[52,85,14],[64,70,18],[80,92,12],
+    [90,65,20],[108,80,16],[122,68,22],[142,90,14],[154,72,18],[170,58,16],
+    [184,85,18],[200,70,20],[218,95,14],[230,68,16],[244,82,20],[262,60,18],
+    [278,75,14],[290,88,18],[306,65,22],[326,78,16],[340,58,20],[358,82,4],
+  ];
+  bldgs.forEach(([bx,bh,bw])=>{
+    r(bx, baseY-bh, bw, bh, '#0a0a24');
+    // Windows
+    for(let wy=5;wy<bh-5;wy+=9){
+      for(let wx=3;wx<bw-3;wx+=6){
+        if(Math.sin(bx*4.1+wy*3.3+wx*1.7)>0.2){
+          const warm=Math.sin(bx+wy)>0;
+          r(bx+wx, baseY-bh+wy, 3, 5, warm?'#ffe066':'#99ccff');
+        }
+      }
+    }
+    // Antenna on tall buildings
+    if(bh>75) { r(bx+bw/2-1,baseY-bh-8,2,9,'#0a0a24'); r(bx+bw/2-2,baseY-bh-9,4,2,'#e63946'); }
+  });
+}
+
+// ── Pixel runner sprite (victory pose) ───────────────────────────────────────
+function drawRunnerVictory(cx, cy, frame) {
+  const P=4; // bigger pixels for feature art
+  const ox=cx-5*P, oy=cy-14*P;
+
+  // Shadow
+  ctx.fillStyle='rgba(0,0,0,0.25)';
+  ctx.beginPath(); ctx.ellipse(cx,cy+2,18,5,0,0,Math.PI*2); ctx.fill();
+
+  // Both arms raised in V (victory)
+  // Left arm up-left
+  r(ox+P,   oy+4*P, 2*P, P,   '#ffcc88');  // arm
+  r(ox,     oy+2*P, 2*P, 3*P, '#ffcc88');  // forearm
+  // Right arm up-right
+  r(ox+7*P, oy+4*P, 2*P, P,   '#ffcc88');
+  r(ox+8*P, oy+2*P, 2*P, 3*P, '#ffcc88');
+
+  // Torso (shirt — alternates colour on frame)
+  const shirtCol = frame%4<2 ? '#e63946' : '#ff6b6b';
+  r(ox+2*P, oy+4*P, 6*P, 5*P, shirtCol);
+  r(ox+2*P, oy+4*P, 6*P, P,   shadeCol(shirtCol,40)); // highlight
+
+  // Head
+  r(ox+3*P, oy,     4*P, 4*P, '#ffcc88');
+  // Hair
+  r(ox+3*P, oy,     4*P, P+1, '#5c3a1e');
+  r(ox+3*P, oy,     P,   2*P, '#5c3a1e');
+  r(ox+6*P, oy,     P,   2*P, '#5c3a1e');
+  // Smile
+  r(ox+4*P, oy+3*P, P,   P/2,'#d4884e');
+  r(ox+5*P, oy+3*P, P,   P/2,'#d4884e');
+  // Eyes
+  r(ox+4*P, oy+2*P, P,   P,   '#222');
+  r(ox+6*P, oy+2*P, P,   P,   '#222');
+  // Eye shine
+  r(ox+4*P+1,oy+2*P,1,1,'#fff');
+  r(ox+6*P+1,oy+2*P,1,1,'#fff');
+
+  // Shorts
+  r(ox+2*P, oy+9*P, 6*P, 2*P, '#1d6fa4');
+
+  // Legs — jump/landing alternating
+  const legOff = frame%2===0?0:P/2;
+  r(ox+2*P, oy+11*P+legOff, 2*P, 3*P-legOff, '#ffcc88');
+  r(ox+6*P, oy+11*P+legOff, 2*P, 3*P-legOff, '#ffcc88');
+  // Shoes
+  r(ox+P,   oy+13*P+legOff, 4*P, P+1, '#222244');
+  r(ox+6*P, oy+13*P+legOff, 4*P, P+1, '#222244');
+
+  // Number bib
+  r(ox+3*P, oy+5*P, 4*P, 3*P, '#fff');
+  ctx.fillStyle='#e63946'; ctx.font=`bold ${P*2}px monospace`;
+  ctx.fillText(String(VDOT_NEW), ox+3*P+2, oy+7*P+2);
+}
+
+// ── Detailed trophy ───────────────────────────────────────────────────────────
+function drawBigTrophy(cx, cy, bounce) {
+  const by = cy + bounce;
+  const g  = COL.gold, dk='#b8860b', lt='#fff4aa';
+
+  // Glow underneath
+  ctx.fillStyle='rgba(255,215,0,0.15)';
+  ctx.beginPath(); ctx.ellipse(cx,by+38,38,12,0,0,Math.PI*2); ctx.fill();
+
+  // Base plate
+  r(cx-28, by+32, 56, 8,  dk);
+  r(cx-24, by+30, 48, 4,  g);
+  r(cx-24, by+30, 48, 2,  lt);
+
+  // Stem
+  r(cx-6,  by+14, 12, 18, dk);
+  r(cx-4,  by+14, 8,  18, g);
+
+  // Cup body (trapezoidal)
+  r(cx-28, by-14, 56, 28, g);
+  r(cx-26, by-20, 52, 8,  g);
+  r(cx-22, by-26, 44, 8,  g);
+  r(cx-18, by-30, 36, 6,  g);
+
+  // Cup shine
+  r(cx-20, by-26, 10, 18, lt);
+  r(cx-16, by-28, 6,  6,  '#fffde0');
+
+  // Handles (decorative scrolls)
+  r(cx-36, by-8,  8,  14, dk);
+  r(cx-34, by-12, 6,  4,  dk);
+  r(cx-34, by+2,  6,  4,  dk);
+  r(cx+28, by-8,  8,  14, dk);
+  r(cx+28, by-12, 6,  4,  dk);
+  r(cx+28, by+2,  6,  4,  dk);
+
+  // Rim
+  r(cx-30, by-14, 60, 4,  lt);
+  r(cx-30, by-14, 60, 2,  '#fffde0');
+
+  // Star on cup
+  ctx.fillStyle='#fff4aa'; ctx.font='bold 18px monospace';
+  ctx.fillText('★', cx-9, by+4);
+
+  // Tiny medals on base
+  ['🥇','🥈','🥉'].forEach((m,i) => {
+    ctx.font='10px monospace';
+    ctx.fillText(m, cx-22+i*16, by+38);
+  });
+}
+
+const COL = {
+  gold:'#ffd700', accent:'#f5a623', hudBorder:'#e94560',
+  carR:'#e63946', carB:'#1d6fa4', busY:'#f8e100',
+  windshield:'#88ccff',
+};
+
+// ── VDOT pace calculator (simplified) ────────────────────────────────────────
+function vdotPace(vdot, pct) {
+  const vo2=vdot*pct, c=vo2+4.60;
+  const v=(-0.182258+Math.sqrt(0.182258*0.182258+4*0.000104*c))/(2*0.000104);
+  const m=1000/v;
+  const mins=Math.floor(m), secs=Math.round((m-mins)*60);
+  return `${mins}:${String(secs===60?0:secs).padStart(2,'0')}`;
+}
+
+function getPaces(vdot) {
+  return {
+    E: vdotPace(vdot,0.700),
+    M: vdotPace(vdot,0.810),
+    T: vdotPace(vdot,0.880),
+    I: vdotPace(vdot,0.975),
+    R: vdotPace(vdot,1.040),
+  };
+}
+
+const newPaces = getPaces(VDOT_NEW);
+const oldPaces = getPaces(VDOT_OLD);
+
+// ── Animation state ───────────────────────────────────────────────────────────
+let t = 0, lastTS = 0;
+let phase = 'INTRO';  // INTRO → REVEAL → PACES → DONE
+let phaseT = 0;
+let runnerFrame = 0, runnerTimer = 0;
+let trophyBounce = 0, trophyDir = -1;
+let vdotDisplayed = VDOT_OLD;
+let fwTimer = 0;
+let hasPlayedFanfare = false;
+let buttonAlpha = 0;
+
+// ── Main render ───────────────────────────────────────────────────────────────
+function render() {
+  ctx.clearRect(0,0,CW,CH);
+
+  // Background
+  drawNightSky();
+  drawSkyline();
+
+  // Ground / road strip
+  const groundY = Math.floor(CH*0.52);
+  r(0, groundY, CW, CH-groundY, '#1a1830');
+  r(0, groundY, CW, CH-groundY, 'rgba(0,0,0,0.3)');
+  // Podium strip
+  const grad = ctx.createLinearGradient(0,groundY,0,groundY+80);
+  grad.addColorStop(0,'#1a3a1a'); grad.addColorStop(1,'#0d1a0d');
+  ctx.fillStyle=grad; ctx.fillRect(0,groundY,CW,80);
+  // Ground line
+  r(0,groundY,CW,3,'#2a5a2a');
+
+  // Particles behind everything
+  drawParticles();
+
+  const pT = phaseT;
+
+  // ── INTRO phase: runner runs in from left ─────────────────────────────────
+  if(phase==='INTRO') {
+    const runX = Math.min(CW*0.5, (pT/0.8)*CW*0.5);
+    drawRunnerVictory(runX, groundY+10, runnerFrame);
+
+    // "LEVEL UP" flashes in
+    if(pT>0.5) {
+      const a=Math.min(1,(pT-0.5)/0.3);
+      ctx.globalAlpha=a;
+      ctx.fillStyle='rgba(255,215,0,0.08)';
+      ctx.fillRect(0,CH*0.25,CW,60);
+      ctx.globalAlpha=1;
+      centeredText('LEVEL  UP!', CH*0.27+28, 32, COL.gold, true);
+      // Scanlines
+      for(let sl=0;sl<60;sl+=3) r(0,CH*0.27+sl,CW,1,'rgba(0,0,0,0.15)');
+    }
+  }
+
+  // ── REVEAL phase: VDOT numbers animate up ────────────────────────────────
+  if(phase==='REVEAL'||phase==='PACES'||phase==='DONE') {
+    // Runner stays on right
+    drawRunnerVictory(CW*0.75, groundY+10, runnerFrame);
+
+    // Background glow for VDOT section
+    ctx.fillStyle='rgba(255,215,0,0.06)';
+    ctx.fillRect(0,CH*0.1,CW,200);
+
+    // "VDOT LEVEL UP" header
+    ctx.fillStyle='rgba(255,215,0,0.12)';
+    ctx.fillRect(10,CH*0.1,CW-20,36);
+    pixelBorder(10,CH*0.1,CW-20,36,'rgba(255,215,0,0.4)');
+    centeredText('★  VDOT LEVEL UP  ★', CH*0.1+24, 14, COL.gold, true);
+
+    // VDOT number counter
+    const vdotY = CH*0.25;
+    const numSize = 72;
+
+    // Old VDOT (fading out)
+    const oldA = phase==='REVEAL' ? Math.max(0, 1-(pT/0.4)) : 0;
+    if(oldA>0) {
+      ctx.globalAlpha=oldA;
+      centeredText(String(VDOT_OLD), vdotY, numSize, '#888', true);
+      ctx.globalAlpha=1;
+    }
+
+    // New VDOT (counting up then settling)
+    const newA = phase==='REVEAL' ? Math.min(1, (pT-0.2)/0.4) : 1;
+    const shake = phase==='REVEAL' && pT<0.8 ? Math.sin(pT*40)*3*(1-pT/0.8) : 0;
+    ctx.globalAlpha=Math.max(0,newA);
+
+    // Glow rings behind number
+    if(newA>0.5) {
+      const rings=[
+        {s:1.2,a:0.06},{s:1.0,a:0.1},{s:0.8,a:0.15},
+      ];
+      rings.forEach(({s,a})=>{
+        ctx.fillStyle=`rgba(255,215,0,${a*newA})`;
+        ctx.beginPath();
+        ctx.ellipse(CW/2+shake, vdotY-numSize*0.4, numSize*s, numSize*0.55*s, 0,0,Math.PI*2);
+        ctx.fill();
+      });
+    }
+
+    ctx.font=`bold ${numSize}px monospace`;
+    const vStr=String(VDOT_NEW);
+    const vx=CW/2-ctx.measureText(vStr).width/2+shake;
+    // Shadow
+    ctx.fillStyle='rgba(100,60,0,0.8)'; ctx.fillText(vStr,vx+4,vdotY+4);
+    // Main text with gradient
+    const numGrad=ctx.createLinearGradient(0,vdotY-numSize,0,vdotY+8);
+    numGrad.addColorStop(0,'#fff4aa');
+    numGrad.addColorStop(0.4,'#ffd700');
+    numGrad.addColorStop(1,'#b8860b');
+    ctx.fillStyle=numGrad; ctx.fillText(vStr,vx,vdotY);
+    ctx.globalAlpha=1;
+
+    // Arrow + old number small
+    if(phase!=='INTRO') {
+      ctx.globalAlpha=0.6;
+      ctx.font='bold 18px monospace';
+      ctx.fillStyle='#888';
+      const arrowTxt=`${VDOT_OLD}  →`;
+      ctx.fillText(arrowTxt, CW/2-ctx.measureText(arrowTxt).width/2-30, vdotY-numSize*0.7);
+      ctx.globalAlpha=1;
+    }
+
+    // Source label
+    const srcTxt = SOURCE==='race' ? '🏁 Race Performance' : '📈 Weekly Progress';
+    centeredText(srcTxt, vdotY+28, 11, 'rgba(255,255,255,0.6)');
+
+    // Athlete name
+    centeredText(ATH_NAME.toUpperCase(), vdotY+48, 13, '#aac8ff', true);
+
+    // Trophy (small, beside runner)
+    if(phase==='REVEAL'||phase==='PACES'||phase==='DONE') {
+      trophyBounce += trophyDir*0.15;
+      if(trophyBounce<-4) trophyDir=1;
+      if(trophyBounce>0)  trophyDir=-1;
+      drawBigTrophy(52, CH*0.38, trophyBounce);
+    }
+  }
+
+  // ── PACES phase: new pace card slides up ─────────────────────────────────
+  if(phase==='PACES'||phase==='DONE') {
+    const slideY = phase==='PACES'
+      ? CH*0.58 + Math.max(0,(1-pT/0.5))*(CH*0.25)
+      : CH*0.58;
+
+    // Card background
+    pixelBorder(12, slideY, CW-24, 210, 'rgba(245,166,35,0.6)');
+    r(14, slideY+2, CW-28, 206, 'rgba(5,5,22,0.95)');
+    // Scanlines
+    for(let sl=0;sl<206;sl+=3) r(14,slideY+2+sl,CW-28,1,'rgba(0,0,0,0.12)');
+
+    // Header
+    r(14, slideY+2, CW-28, 28, 'rgba(255,215,0,0.12)');
+    centeredText('YOUR NEW TRAINING PACES', slideY+18, 10, COL.gold);
+
+    // Pace rows
+    const zones=[
+      {z:'E', name:'Easy Run',   col:'#4ecdc4', pct:'70%'},
+      {z:'M', name:'Marathon',   col:'#45b7d1', pct:'81%'},
+      {z:'T', name:'Threshold',  col:'#f7dc6f', pct:'88%'},
+      {z:'I', name:'Interval',   col:'#e74c3c', pct:'97.5%'},
+      {z:'R', name:'Repetition', col:'#9b59b6', pct:'104%'},
+    ];
+
+    zones.forEach(({z,name,col,pct},i)=>{
+      const ry = slideY+38+i*34;
+
+      // Row bg (alternating)
+      r(16, ry, CW-32, 30, i%2===0?'rgba(255,255,255,0.03)':'rgba(0,0,0,0.1)');
+
+      // Zone badge
+      r(20, ry+5, 22, 20, col+'33');
+      ctx.strokeStyle=col; ctx.lineWidth=1; ctx.strokeRect(20,ry+5,22,20);
+      ctx.fillStyle=col; ctx.font='bold 12px monospace';
+      ctx.fillText(z, 26, ry+19);
+
+      // Zone name + percent
+      ctx.fillStyle='rgba(255,255,255,0.7)'; ctx.font='bold 10px monospace';
+      ctx.fillText(name, 48, ry+14);
+      ctx.fillStyle='rgba(255,255,255,0.35)'; ctx.font='9px monospace';
+      ctx.fillText(pct+' VDOT', 48, ry+26);
+
+      // New pace (big, right)
+      ctx.fillStyle=col; ctx.font='bold 18px monospace';
+      const np=newPaces[z]+'/km';
+      ctx.fillText(np, CW-88, ry+20);
+
+      // Old pace (struck through / faded)
+      ctx.fillStyle='rgba(255,255,255,0.25)'; ctx.font='10px monospace';
+      const op=oldPaces[z];
+      ctx.fillText(op, CW-115, ry+26);
+      // Strikethrough
+      const ow=ctx.measureText(op).width;
+      r(CW-115, ry+22, ow, 1, 'rgba(255,255,255,0.3)');
+
+      // Improvement arrow
+      if(oldPaces[z]!==newPaces[z]){
+        ctx.fillStyle='#2ecc71'; ctx.font='bold 10px monospace';
+        ctx.fillText('▲', CW-125, ry+20);
+      }
+    });
+  }
+
+  // ── Close button ─────────────────────────────────────────────────────────
+  if(phase==='DONE') {
+    buttonAlpha=Math.min(1,buttonAlpha+0.03);
+    ctx.globalAlpha=buttonAlpha;
+    const btnY=CH-52;
+    // Button glow
+    ctx.fillStyle='rgba(233,69,96,0.2)'; ctx.fillRect(40,btnY-2,CW-80,40);
+    pixelBorder(40,btnY,CW-80,36,COL.hudBorder);
+    r(42,btnY+2,CW-84,32,'rgba(13,13,46,0.95)');
+    const closeTxt = Math.floor(t*2)%2===0 ? 'TAP TO CONTINUE ▶' : 'TAP TO CONTINUE  ';
+    centeredText(closeTxt, btnY+23, 13, '#ffffff', true);
+    ctx.globalAlpha=1;
+  }
+}
+
+// ── Game loop ─────────────────────────────────────────────────────────────────
+function loop(ts) {
+  const dt=Math.min((ts-lastTS)/1000,0.05);
+  lastTS=ts;
+  t+=dt;
+  phaseT+=dt;
+
+  // Runner animation
+  runnerTimer+=dt;
+  if(runnerTimer>0.15){ runnerFrame=(runnerFrame+1)%4; runnerTimer=0; }
+
+  // Phase transitions
+  if(phase==='INTRO' && phaseT>1.0){
+    phase='REVEAL'; phaseT=0;
+    spawnConfetti(80);
+    spawnFirework(CW*0.5, CH*0.3);
+    spawnFirework(CW*0.25,CH*0.4);
+    spawnFirework(CW*0.75,CH*0.35);
+  }
+  if(phase==='REVEAL' && phaseT>1.4){
+    phase='PACES'; phaseT=0;
+    spawnConfetti(40);
+  }
+  if(phase==='PACES' && phaseT>1.2){
+    phase='DONE'; phaseT=0;
+  }
+
+  // Auto-fireworks during REVEAL/PACES
+  if(phase==='REVEAL'||phase==='PACES'){
+    fwTimer+=dt;
+    if(fwTimer>0.6){
+      fwTimer=0;
+      spawnFirework(Math.random()*CW, CH*0.1+Math.random()*CH*0.35);
+    }
+  }
+
+  updateParticles(dt);
+  render();
+  requestAnimationFrame(loop);
+}
+
+// ── Input / close ─────────────────────────────────────────────────────────────
+function handleClose() {
+  initAC();
+  if(phase!=='DONE') return;
+  if(window.Telegram&&window.Telegram.WebApp){
+    Telegram.WebApp.sendData(JSON.stringify({
+      event:'vdot_levelup_seen',
+      from: VDOT_OLD,
+      to:   VDOT_NEW,
+      name: ATH_NAME,
+    }));
+    Telegram.WebApp.close();
+  } else {
+    // Dev: loop back
+    phase='INTRO'; phaseT=0;
+    particles=[]; fireworks=[];
+  }
+}
+
+canvas.addEventListener('click',      handleClose);
+canvas.addEventListener('touchstart', e=>{ e.preventDefault(); initAC(); playFanfare(); handleClose(); },{passive:false});
+document.addEventListener('keydown',  e=>{ if(e.key==='Enter'||e.key===' '){ initAC(); playFanfare(); handleClose(); } });
+
+// Auto-play fanfare on first user interaction
+canvas.addEventListener('touchstart', ()=>{ if(!hasPlayedFanfare){ initAC(); playFanfare(); hasPlayedFanfare=true; }},{passive:true,once:true});
+canvas.addEventListener('click',      ()=>{ if(!hasPlayedFanfare){ initAC(); playFanfare(); hasPlayedFanfare=true; }},{once:true});
+
+// Telegram SDK
+const tgScript=document.createElement('script');
+tgScript.src='https://telegram.org/js/telegram-web-app.js';
+tgScript.onload=()=>{ if(window.Telegram) Telegram.WebApp.ready(); };
+document.head.appendChild(tgScript);
+
+// Kick off
+requestAnimationFrame(ts=>{ lastTS=ts; requestAnimationFrame(loop); });
+</script>
+</body>
+</html>
